@@ -108,7 +108,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/buildroot-nss-out
           key: lgwos-${{ env.SYSDEPS_CHECKPOINT_SCHEMA }}-${{ env.WEBOS_SDK_SHA256 }}-${{ env.BUILDROOT_REF }}
-          fail-on-cache-miss: true
+          fail-on-cache-miss: false
 
       - name: Revalidate and inject target sysdeps
         shell: bash
