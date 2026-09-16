@@ -143,3 +143,209 @@ diff --git a/src/build/toolchain/linux/BUILD.gn b/src/build/toolchain/linux/BUIL
      v8_current_cpu = "arm"
    }
  }
+diff --git a/src/media/capture/video/linux/v4l2_capture_delegate.cc b/src/media/capture/video/linux/v4l2_capture_delegate.cc
+--- a/src/media/capture/video/linux/v4l2_capture_delegate.cc
++++ b/src/media/capture/video/linux/v4l2_capture_delegate.cc
+@@ -1222,5 +1222,11 @@
+ #if BUILDFLAG(IS_LINUX)
+ gfx::ColorSpace V4L2CaptureDelegate::BuildColorSpaceFromv4l2() {
++#if defined(OS_WEBOS)
++  // The legacy webOS SDK exposes a pre-extended V4L2 UAPI without the
++  // quantization, YCbCr encoding, and transfer-function fields used below.
++  // Preserve capture support and report an unspecified color space instead.
++  return gfx::ColorSpace();
++#else
+   v4l2_colorspace v4l2_primary = (v4l2_colorspace)video_fmt_.fmt.pix.colorspace;
+   v4l2_quantization v4l2_range =
+       (v4l2_quantization)video_fmt_.fmt.pix.quantization;
+@@ -1408,5 +1414,6 @@
+   DVLOG(2) << __func__ << "build color space:"
+            << gfx::ColorSpace(primary, transfer, matrix, range).ToString();
+   return gfx::ColorSpace(primary, transfer, matrix, range);
++#endif  // defined(OS_WEBOS)
+ }
+ #endif
+diff --git a/src/mojo/core/channel_linux.cc b/src/mojo/core/channel_linux.cc
+index f48806a..39f5dde 100644
+--- a/src/mojo/core/channel_linux.cc
++++ b/src/mojo/core/channel_linux.cc
+@@ -6,7 +6,9 @@
+ 
+ #include <fcntl.h>
+ #include <linux/futex.h>
++#if !defined(OS_WEBOS)
+ #include <linux/memfd.h>
++#endif
+ #include <sys/eventfd.h>
+ #include <sys/mman.h>
+ #include <sys/syscall.h>
+@@ -112,7 +114,9 @@ class DataAvailableNotifier {
+ 
+ namespace {
+ 
++#if !defined(OS_WEBOS)
+ constexpr int kMemFDSeals = F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW;
++#endif
+ 
+ std::atomic_bool g_params_set{false};
+ std::atomic_bool g_use_shared_mem{false};
+@@ -138,6 +142,18 @@ constexpr size_t RoundUpToWordBoundary(size_t size) {
+   return base::bits::AlignUp(size, sizeof(void*));
+ }
+ 
++#if defined(OS_WEBOS)
++// LGWOS: the target kernel is 3.10.x. Chromium itself requires Linux 4.x+
++// before enabling this optional memfd/eventfd channel upgrade, so keep the
++// socket-backed ChannelPosix path and avoid depending on newer memfd UAPI.
++base::ScopedFD CreateSealedMemFD(size_t) {
++  return {};
++}
++
++bool ValidateFDIsProperlySealedMemFD(const base::ScopedFD&) {
++  return false;
++}
++#else
+ base::ScopedFD CreateSealedMemFD(size_t size) {
+   CHECK_GT(size, 0u);
+   CHECK_EQ(size % base::GetPageSize(), 0u);
+@@ -175,6 +191,7 @@ bool ValidateFDIsProperlySealedMemFD(const base::ScopedFD& fd) {
+ 
+   return seals == kMemFDSeals;
+ }
++#endif  // defined(OS_WEBOS)
+ 
+ // EventFDNotifier is an implementation of the DataAvailableNotifier interface
+ // which uses EventFDNotifier to signal the reader.
+@@ -909,6 +926,9 @@ void ChannelLinux::OfferSharedMemUpgradeInternal() {
+ 
+ // static
+ bool ChannelLinux::KernelSupportsUpgradeRequirements() {
++#if defined(OS_WEBOS)
++  return false;
++#else
+   static bool supported = []() -> bool {
+     // See https://crbug.com/1192696 for more context, but some Android vendor
+     // kernels pre-3.17 would use higher undefined syscall numbers for private
+@@ -947,6 +967,7 @@ bool ChannelLinux::KernelSupportsUpgradeRequirements() {
+     return memfd_supported && EventFDNotifier::KernelSupported();
+   }();
+   return supported;
++#endif  // defined(OS_WEBOS)
+ }
+ 
+ // static
+diff --git a/src/sandbox/policy/linux/bpf_cros_amd_gpu_policy_linux.cc b/src/sandbox/policy/linux/bpf_cros_amd_gpu_policy_linux.cc
+--- a/src/sandbox/policy/linux/bpf_cros_amd_gpu_policy_linux.cc
++++ b/src/sandbox/policy/linux/bpf_cros_amd_gpu_policy_linux.cc
+@@ -6,7 +6,13 @@
+ 
+ #include <errno.h>
+ #include <fcntl.h>
++#if defined(OS_WEBOS)
++// Linux UAPI defines KCMP_FILE as type 0. The legacy webOS SDK predates
++// linux/kcmp.h, while Chromium supplies the ARM __NR_kcmp syscall number.
++#define KCMP_FILE 0
++#else
+ #include <linux/kcmp.h>
++#endif
+ #include <sys/socket.h>
+ 
+ // Some arch's (arm64 for instance) unistd.h don't pull in symbols used here
+diff --git a/src/sandbox/policy/linux/bpf_gpu_policy_linux.cc b/src/sandbox/policy/linux/bpf_gpu_policy_linux.cc
+--- a/src/sandbox/policy/linux/bpf_gpu_policy_linux.cc
++++ b/src/sandbox/policy/linux/bpf_gpu_policy_linux.cc
+@@ -6,6 +6,22 @@
+ 
+ #include <errno.h>
+ #include <fcntl.h>
++#if defined(OS_WEBOS)
++// LGWOS: the legacy webOS SDK predates Linux file-sealing UAPI definitions.
++// Keep Chromium's existing GPU fcntl policy and supply the stable ABI values.
++#ifndef F_ADD_SEALS
++#define F_ADD_SEALS 1033
++#endif
++#ifndef F_SEAL_SEAL
++#define F_SEAL_SEAL 0x0001
++#endif
++#ifndef F_SEAL_SHRINK
++#define F_SEAL_SHRINK 0x0002
++#endif
++#ifndef F_SEAL_GROW
++#define F_SEAL_GROW 0x0004
++#endif
++#endif
+ #include <sys/socket.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+diff --git a/src/sandbox/policy/linux/bpf_network_policy_linux.cc b/src/sandbox/policy/linux/bpf_network_policy_linux.cc
+--- a/src/sandbox/policy/linux/bpf_network_policy_linux.cc
++++ b/src/sandbox/policy/linux/bpf_network_policy_linux.cc
+@@ -7,6 +7,7 @@
+ #include <memory>
+ 
+ #include <fcntl.h>
++#include <sys/socket.h>
+ #include <linux/ioctl.h>
+ #include <linux/net.h>
+ #include <linux/netlink.h>
+@@ -17,7 +18,6 @@
+ #include <netinet/tcp.h>
+ #include <sys/inotify.h>
+ #include <sys/mman.h>
+-#include <sys/socket.h>
+ #include <unistd.h>
+ 
+ #include "base/feature_list.h"
+diff --git a/src/sandbox/policy/linux/bpf_hardware_video_decoding_policy_linux.cc b/src/sandbox/policy/linux/bpf_hardware_video_decoding_policy_linux.cc
+--- a/src/sandbox/policy/linux/bpf_hardware_video_decoding_policy_linux.cc
++++ b/src/sandbox/policy/linux/bpf_hardware_video_decoding_policy_linux.cc
+@@ -4,7 +4,13 @@
+ 
+ #include "sandbox/policy/linux/bpf_hardware_video_decoding_policy_linux.h"
+ 
++#if defined(OS_WEBOS)
++// Linux UAPI defines KCMP_FILE as type 0. The legacy webOS SDK predates
++// linux/kcmp.h, while Chromium supplies the ARM __NR_kcmp syscall number.
++#define KCMP_FILE 0
++#else
+ #include <linux/kcmp.h>
++#endif
+ 
+ #include "media/gpu/buildflags.h"
+ #include "sandbox/linux/seccomp-bpf-helpers/sigsys_handlers.h"
+diff --git a/src/third_party/wayland/src/cursor/os-compatibility.c b/src/third_party/wayland/src/cursor/os-compatibility.c
+--- a/src/third_party/wayland/src/cursor/os-compatibility.c
++++ b/src/third_party/wayland/src/cursor/os-compatibility.c
+@@ -38,7 +38,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ 
+-#ifdef HAVE_MEMFD_CREATE
++#if defined(HAVE_MEMFD_CREATE) && !defined(OS_WEBOS)
+ #include <sys/mman.h>
+ #endif
+ 
+@@ -123,7 +123,7 @@ os_create_anonymous_file(off_t size)
+ 	size_t name_size;
+ 	int fd;
+ 
+-#ifdef HAVE_MEMFD_CREATE
++#if defined(HAVE_MEMFD_CREATE) && !defined(OS_WEBOS)
+ 	fd = memfd_create("wayland-cursor", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+ 	if (fd >= 0) {
+ 		/* We can add this seal before calling posix_fallocate(), as
+diff --git a/src/third_party/wayland/include/config.h b/src/third_party/wayland/include/config.h
+--- a/src/third_party/wayland/include/config.h
++++ b/src/third_party/wayland/include/config.h
+@@ -8,7 +8,11 @@
+ 
+ #define HAVE_BROKEN_MSG_CMSG_CLOEXEC 0
+ 
++#if defined(OS_WEBOS)
++#undef HAVE_MEMFD_CREATE
++#else
+ #define HAVE_MEMFD_CREATE
++#endif
+ 
+ #define HAVE_MKOSTEMP
+ 
